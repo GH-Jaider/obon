@@ -1,0 +1,56 @@
+version: 2
+
+project_name: obon
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: obon
+    main: ./cmd/obon
+    binary: obon
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: GH-Jaider
+      name: homebrew-obon
+    homepage: "https://github.com/GH-Jaider/obon"
+    description: "Every dev server your agents summoned, still lingering on your ports — see them and send them off."
+    license: "MIT"
