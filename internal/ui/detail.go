@@ -14,20 +14,64 @@ func (m Model) showURL(g *scan.Group) bool {
 	return g.Proto == scan.TCP && g.PIDs[0].Safety.Level == scan.SafetySafe
 }
 
+// detailWidths returns the box width and its inner text budget.
+func (m Model) detailWidths() (w, cw int) {
+	w = minInt(m.width-8, 84)
+	if w < 40 {
+		w = 40
+	}
+	return w, w - 6
+}
+
+// detailMaxLines is how many content lines fit inside the box without
+// pushing its border past the body region.
+func (m Model) detailMaxLines() int {
+	return maxInt(5, m.bodyRows()-4) // border + vertical padding
+}
+
 // renderDetail builds the detail modal for the cursor row: the URL and
 // what it serves, the send-off verdict, full command, cwd, start time,
-// parent chain as a tree, and every socket of the PID.
+// parent chain as a tree, and every socket of the PID. Content taller
+// than the body scrolls inside the box; the frame never breaks.
 func (m Model) renderDetail() string {
 	g := m.detail
 	if g == nil {
 		return ""
 	}
-	w := minInt(m.width-8, 84)
-	if w < 40 {
-		w = 40
+	w, cw := m.detailWidths()
+	lines := strings.Split(strings.TrimRight(m.detailContent(g, cw), "\n"), "\n")
+	maxH := m.detailMaxLines()
+	if len(lines) > maxH {
+		view := maxH - 1 // one line reserved for the scroll status
+		s := minInt(m.detailScroll, len(lines)-view)
+		if s < 0 {
+			s = 0
+		}
+		vis := append([]string{}, lines[s:s+view]...)
+		status := fmt.Sprintf("%d-%d of %d · j/k scroll", s+1, s+view, len(lines))
+		vis = append(vis, m.st.faintText.Render(status))
+		lines = vis
 	}
-	cw := w - 6 // text budget inside the box padding
+	return m.st.modalBox.Width(w).Render(strings.Join(lines, "\n"))
+}
 
+// detailScrollMax is the largest useful detailScroll for the open row.
+func (m Model) detailScrollMax() int {
+	g := m.detail
+	if g == nil {
+		return 0
+	}
+	_, cw := m.detailWidths()
+	n := len(strings.Split(strings.TrimRight(m.detailContent(g, cw), "\n"), "\n"))
+	maxH := m.detailMaxLines()
+	if n <= maxH {
+		return 0
+	}
+	return n - (maxH - 1)
+}
+
+// detailContent renders the box's inner text, unclipped.
+func (m Model) detailContent(g *scan.Group, cw int) string {
 	var b strings.Builder
 	title := g.PIDs[0].Process.Name + " :" + fmt.Sprint(g.Port)
 	b.WriteString(m.st.modalTitle.Render(" " + title + " "))
@@ -67,8 +111,7 @@ func (m Model) renderDetail() string {
 		}
 		b.WriteString(m.chainBlock(d, cw))
 	}
-
-	return m.st.modalBox.Width(w).Render(b.String())
+	return b.String()
 }
 
 // urlBlock: the clickable localhost link and what answered there.

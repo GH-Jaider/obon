@@ -39,6 +39,35 @@ func testModel(w, h int) Model {
 	return m
 }
 
+// TestDetailScrollsInsideFrame gives the detail a command long enough
+// to overflow a short terminal and checks the box never breaks: line
+// count within the body region and the bottom border still there.
+func TestDetailScrollsInsideFrame(t *testing.T) {
+	m := testModel(100, 20)
+	long := strings.Repeat("/very/long/path/segment", 12) + "/server.ts --flag value"
+	m.view[0].PIDs[0].Process.Cmdline = long
+	m.detail = m.view[0]
+
+	box := m.renderDetail()
+	lines := strings.Split(box, "\n")
+	if len(lines) > m.bodyRows() {
+		t.Fatalf("detail box is %d lines, body fits %d", len(lines), m.bodyRows())
+	}
+	if !strings.Contains(lines[len(lines)-1], "╰") {
+		t.Error("bottom border must survive overflow")
+	}
+	if m.detailScrollMax() == 0 {
+		t.Error("this content should need scrolling")
+	}
+	// scrolled to the end, the box must still fit and close
+	m.detailScroll = m.detailScrollMax()
+	box = m.renderDetail()
+	lines = strings.Split(box, "\n")
+	if len(lines) > m.bodyRows() || !strings.Contains(lines[len(lines)-1], "╰") {
+		t.Error("scrolled-to-end box must stay framed")
+	}
+}
+
 // TestViewNoOverflow renders the full board at several sizes and
 // checks no line spills past the terminal width.
 func TestViewNoOverflow(t *testing.T) {

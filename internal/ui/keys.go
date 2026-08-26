@@ -67,13 +67,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, openBrowserCmd(m.detail.Port)
 			}
 		case "j", "down":
-			m.detailScroll++
+			if m.detailScroll < m.detailScrollMax() {
+				m.detailScroll++
+			}
 		case "k", "up":
 			if m.detailScroll > 0 {
 				m.detailScroll--
 			}
 		case "g", "home":
 			m.detailScroll = 0
+		case "G", "end":
+			m.detailScroll = m.detailScrollMax()
 		}
 		return m, nil
 	}
