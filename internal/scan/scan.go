@@ -62,6 +62,7 @@ type Detail struct {
 	Origin    string        `json:"origin"`                 // agent name or "manual"
 	OriginPID int32         `json:"origin_pid,omitempty"`
 	Uptime    time.Duration `json:"-"`
+	Safety    Safety        `json:"safety"` // what sending it off would do
 }
 
 // Snapshot is one full scan pass.
@@ -101,6 +102,7 @@ type Scanner struct {
 	src    Source
 	opts   Options
 	pcache map[int32]*Process
+	env    SafetyEnv
 }
 
 // NewScanner returns a Scanner over src.
@@ -111,7 +113,7 @@ func NewScanner(src Source, opts Options) *Scanner {
 	if opts.Timeout == 0 {
 		opts.Timeout = 5 * time.Second
 	}
-	return &Scanner{src: src, opts: opts}
+	return &Scanner{src: src, opts: opts, env: CurrentSafetyEnv()}
 }
 
 // Scan produces one snapshot: sockets, joined with process detail,
@@ -142,6 +144,7 @@ func (s *Scanner) Scan(ctx context.Context) (*Snapshot, error) {
 			warns = append(warns, fmt.Sprintf("pid %d: details unavailable (permissions?)", sk.PID))
 		}
 		s.fillChain(d)
+		d.Safety = AssessSafety(d, s.env)
 		key := sk.Proto + ":" + itoa(sk.Port)
 		g := byKey[key]
 		if g == nil {
@@ -195,19 +198,55 @@ func (s *Scanner) fillChain(d *Detail) {
 		}
 	}
 	d.Parents = chain
-	d.Origin, d.OriginPID = detectOrigin(s.opts.Agents, chain)
+	d.Origin, d.OriginPID = s.detectOrigin(chain)
 }
 
-// detectOrigin returns the nearest matching ancestor per agents list.
-func detectOrigin(agents []string, chain []ProcRef) (string, int32) {
+// interpreters whose argv[1] names the real program: script agents
+// (node /…/claude, a bash wrapper) report the interpreter as their
+// kernel name, so the name alone misses them.
+var interpreters = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "fish": true, "dash": true,
+	"node": true, "python": true, "ruby": true, "perl": true,
+	"bun": true, "deno": true,
+}
+
+// detectOrigin returns the nearest matching ancestor per agents list,
+// matching both the process name and the script it interprets.
+func (s *Scanner) detectOrigin(chain []ProcRef) (string, int32) {
 	for _, ref := range chain {
-		for _, a := range agents {
-			if matchAgent(a, ref.Name) {
-				return a, ref.PID
+		cands := []string{ref.Name}
+		if p, ok := s.src.Info(ref.PID); ok {
+			cands = append(cands, scriptName(p.Cmdline)...)
+		}
+		for _, a := range s.opts.Agents {
+			for _, n := range cands {
+				if matchAgent(a, n) {
+					return a, ref.PID
+				}
 			}
 		}
 	}
 	return "manual", 0
+}
+
+// scriptName yields the script basename behind an interpreter:
+// "node /usr/local/bin/claude --flag" → ["claude"].
+func scriptName(cmdline string) []string {
+	f := strings.Fields(cmdline)
+	if len(f) < 2 {
+		return nil
+	}
+	interp := strings.TrimRight(strings.ToLower(baseName(f[0])), "0123456789.")
+	if !interpreters[interp] {
+		return nil
+	}
+	for _, arg := range f[1:] {
+		if strings.HasPrefix(arg, "-") {
+			continue // interpreter flags before the script
+		}
+		return []string{baseName(arg)}
+	}
+	return nil
 }
 
 // matchAgent matches base names: "code" matches "Code" and "Code Helper";

@@ -46,10 +46,10 @@ func runList(args []string) {
 	}
 
 	w := struct {
-		port, proto, proc, pid, user, origin, up, cwd int
-	}{6, 5, 16, 7, 8, 9, 7, 30}
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
-		w.port, "PORT", w.proto, "PROTO", w.proc, "PROCESS", w.pid, "PID",
+		port, proto, safe, proc, pid, user, origin, up, cwd int
+	}{6, 5, 7, 16, 7, 8, 9, 7, 30}
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
+		w.port, "PORT", w.proto, "PROTO", w.safe, "SAFETY", w.proc, "PROCESS", w.pid, "PID",
 		w.user, "USER", w.origin, "ORIGIN", w.up, "UPTIME", "CWD")
 	fmt.Println(header)
 	for _, g := range groups {
@@ -58,9 +58,10 @@ func runList(args []string) {
 		if len(g.PIDs) > 1 {
 			extra = fmt.Sprintf(" (+%d)", len(g.PIDs)-1)
 		}
-		fmt.Printf("%-*d  %-*s  %-*s  %-*d  %-*s  %-*s  %-*s  %s\n",
+		fmt.Printf("%-*d  %-*s  %-*s  %-*s  %-*d  %-*s  %-*s  %-*s  %s\n",
 			w.port, g.Port,
 			w.proto, strings.ToUpper(g.Proto)+bindMark(g),
+			w.safe, d.Safety.Label,
 			w.proc, trunc(d.Process.Name+extra, w.proc),
 			w.pid, d.Socket.PID,
 			w.user, trunc(d.Process.User, w.user),

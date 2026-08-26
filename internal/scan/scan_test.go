@@ -55,6 +55,26 @@ func testChain() *fakeSource {
 	}
 }
 
+func TestScanOriginThroughInterpreter(t *testing.T) {
+	src := testChain()
+	// claude as a node script: kernel name "node", script in argv[1]
+	src.socks = append(src.socks, Socket{Port: 4000, Proto: TCP, Family: "ipv4", Bind: "127.0.0.1", PID: 800})
+	src.info[800] = &Process{PID: 800, Name: "vite", StartedAt: time.Now().Add(-time.Minute)}
+	src.info[700] = &Process{PID: 700, Name: "node",
+		Cmdline: "node /Users/jai/.local/bin/claude --continue", StartedAt: time.Now().Add(-time.Hour)}
+	src.ppids[800] = 700
+	src.ppids[700] = 1
+	sc := NewScanner(src, Options{})
+	snap, _ := sc.Scan(context.Background())
+	for _, g := range snap.Groups {
+		if g.Port == 4000 {
+			if got := g.PIDs[0].Origin; got != "claude" {
+				t.Errorf("script agent must be detected through the interpreter, got %q", got)
+			}
+		}
+	}
+}
+
 func TestScanGroupsSharedPort(t *testing.T) {
 	sc := NewScanner(testChain(), Options{})
 	snap, err := sc.Scan(context.Background())

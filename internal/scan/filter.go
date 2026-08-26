@@ -46,7 +46,8 @@ func (f *Filter) Match(g *Group) bool {
 			f.matchText(d.Process.Cmdline) ||
 			f.matchText(d.Process.Cwd) ||
 			f.matchText(d.Process.User) ||
-			f.matchText(d.Origin) {
+			f.matchText(d.Origin) ||
+			f.matchText(d.Safety.Label) {
 			return true
 		}
 	}
@@ -74,6 +75,7 @@ const (
 	SortPID
 	SortOrigin
 	SortUptime
+	SortSafety
 )
 
 // ParseSortKey maps a column name to its key; ok=false if unknown.
@@ -91,6 +93,8 @@ func ParseSortKey(name string) (SortKey, bool) {
 		return SortOrigin, true
 	case "uptime", "age":
 		return SortUptime, true
+	case "safety", "safe":
+		return SortSafety, true
 	}
 	return SortPort, false
 }
@@ -127,6 +131,8 @@ func compareGroups(a, b *Group, key SortKey) int {
 		return strings.Compare(x.Origin, y.Origin)
 	case SortUptime:
 		return cmpDur(x.Uptime, y.Uptime)
+	case SortSafety:
+		return cmpInt(x.Safety.Level.Rank(), y.Safety.Level.Rank())
 	}
 	return 0
 }

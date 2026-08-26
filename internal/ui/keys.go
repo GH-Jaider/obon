@@ -13,6 +13,7 @@ import (
 
 var sortCycle = []scan.SortKey{
 	scan.SortPort,
+	scan.SortSafety,
 	scan.SortUptime,
 	scan.SortProcess,
 	scan.SortOrigin,
@@ -60,6 +61,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc", "q", "left", "enter":
 			m.detail = nil
 			m.detailScroll = 0
+			m.probe, m.probeKey = nil, ""
+		case "o":
+			if m.detail.Proto == scan.TCP {
+				return m, openBrowserCmd(m.detail.Port)
+			}
 		case "j", "down":
 			m.detailScroll++
 		case "k", "up":
@@ -94,8 +100,19 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		if len(m.view) > 0 {
-			m.detail = m.view[m.cursor]
+			g := m.view[m.cursor]
+			m.detail = g
 			m.detailScroll = 0
+			m.probe, m.probeKey = nil, ""
+			if m.showURL(g) {
+				m.probeKey = g.Key
+				return m, probeCmd(g.Key, g.Port)
+			}
+		}
+
+	case "o":
+		if len(m.view) > 0 && m.view[m.cursor].Proto == scan.TCP {
+			return m, openBrowserCmd(m.view[m.cursor].Port)
 		}
 
 	case " ":
@@ -117,8 +134,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.select_ = map[string]bool{}
 
 	case "x", "X", "d":
-		if targets := m.chosenTargets(); len(targets) > 0 {
-			m.confirm = &confirmState{targets: targets}
+		if targets, safety := m.chosenTargets(); len(targets) > 0 {
+			m.confirm = &confirmState{targets: targets, safety: safety}
 		}
 
 	case "/":
@@ -217,7 +234,8 @@ func (m *Model) rebuildView() {
 func (m *Model) rescanSoft() { m.rebuildView() }
 
 // chosenTargets: selection if any, else the cursor row's PIDs.
-func (m *Model) chosenTargets() []ops.Target {
+// The parallel safety slice feeds the confirm dialog's verdicts.
+func (m *Model) chosenTargets() ([]ops.Target, []scan.Safety) {
 	var gs []*scan.Group
 	if len(m.select_) > 0 {
 		for _, g := range m.view {
@@ -229,12 +247,14 @@ func (m *Model) chosenTargets() []ops.Target {
 		gs = []*scan.Group{m.view[m.cursor]}
 	}
 	var ts []ops.Target
+	var sf []scan.Safety
 	for _, g := range gs {
 		for _, d := range g.PIDs {
 			ts = append(ts, ops.Target{PID: d.Socket.PID, Name: d.Process.Name, Port: g.Port})
+			sf = append(sf, d.Safety)
 		}
 	}
-	return ts
+	return ts, sf
 }
 
 // startSendOff launches the async send-off for whatever is confirmed.

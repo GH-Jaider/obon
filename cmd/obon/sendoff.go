@@ -13,10 +13,16 @@ import (
 	"github.com/GH-Jaider/obon/internal/scan"
 )
 
-// resolveTargets turns CLI selectors (ports or PIDs) into ops.Target list.
-func resolveTargets(snap *scan.Snapshot, selectors []string) ([]ops.Target, []string) {
+// resolveTargets turns CLI selectors (ports or PIDs) into ops.Target
+// list plus each target's safety verdict, parallel slices.
+func resolveTargets(snap *scan.Snapshot, selectors []string) ([]ops.Target, []scan.Safety, []string) {
 	var targets []ops.Target
+	var safety []scan.Safety
 	var missing []string
+	add := func(g *scan.Group, d *scan.Detail) {
+		targets = append(targets, ops.Target{PID: d.Socket.PID, Name: d.Process.Name, Port: g.Port})
+		safety = append(safety, d.Safety)
+	}
 	for _, sel := range selectors {
 		n, err := strconv.Atoi(strings.TrimPrefix(sel, ":"))
 		if err != nil {
@@ -27,7 +33,7 @@ func resolveTargets(snap *scan.Snapshot, selectors []string) ([]ops.Target, []st
 		for _, g := range snap.Groups {
 			if g.Port == n {
 				for _, d := range g.PIDs {
-					targets = append(targets, ops.Target{PID: d.Socket.PID, Name: d.Process.Name, Port: g.Port})
+					add(g, d)
 				}
 				matched = true
 			}
@@ -35,7 +41,7 @@ func resolveTargets(snap *scan.Snapshot, selectors []string) ([]ops.Target, []st
 		for _, g := range snap.Groups {
 			for _, d := range g.PIDs {
 				if int(d.Socket.PID) == n {
-					targets = append(targets, ops.Target{PID: d.Socket.PID, Name: d.Process.Name, Port: g.Port})
+					add(g, d)
 					matched = true
 				}
 			}
@@ -44,7 +50,26 @@ func resolveTargets(snap *scan.Snapshot, selectors []string) ([]ops.Target, []st
 			missing = append(missing, sel)
 		}
 	}
-	return targets, missing
+	return targets, safety, missing
+}
+
+// warnUnsafe tells the user what a send-off would cost before they
+// confirm; safe targets stay silent.
+func warnUnsafe(targets []ops.Target, safety []scan.Safety) {
+	for i, s := range safety {
+		if i >= len(targets) || s.Level == scan.SafetySafe {
+			continue
+		}
+		mark := "·"
+		switch s.Level {
+		case scan.SafetyCaution:
+			mark = "◆"
+		case scan.SafetySystem:
+			mark = "▲"
+		}
+		fmt.Fprintf(os.Stderr, "  %s %s (pid %d): %s — %s\n",
+			mark, targets[i].Name, targets[i].PID, s.Reason, s.Consequence)
+	}
 }
 
 func runKill(args []string) {
@@ -58,7 +83,7 @@ func runKill(args []string) {
 
 	cfg := loadConfig()
 	snap := scanOnce(context.Background(), newScanner(cfg))
-	targets, missing := resolveTargets(snap, fs.Args())
+	targets, safety, missing := resolveTargets(snap, fs.Args())
 	for _, m := range missing {
 		fmt.Fprintf(os.Stderr, "obon: nothing listening for %q\n", m)
 	}
@@ -66,6 +91,7 @@ func runKill(args []string) {
 		os.Exit(1)
 	}
 
+	warnUnsafe(targets, safety)
 	names := describeTargets(targets)
 	if !*yes && !confirmSendOff(targets, names) {
 		fmt.Println("Cancelled. The spirits stay.")
@@ -113,7 +139,7 @@ func printReport(results []ops.Result) {
 		} else if !r.PortFree {
 			state = "WARNING: port still occupied"
 		}
-		fmt.Printf("  ✓ sent off %s — %s\n", label, state)
+		fmt.Printf("  ✓ sent off %s · %s\n", label, state)
 	}
 }
 
@@ -130,18 +156,21 @@ func runClean(args []string) {
 	cfg := loadConfig()
 	snap := scanOnce(context.Background(), newScanner(cfg))
 	var targets []ops.Target
+	var safety []scan.Safety
 	for _, g := range snap.Groups {
 		for _, d := range g.PIDs {
 			if d.Uptime >= *older {
 				continue
 			}
 			targets = append(targets, ops.Target{PID: d.Socket.PID, Name: d.Process.Name, Port: g.Port})
+			safety = append(safety, d.Safety)
 		}
 	}
 	if len(targets) == 0 {
-		fmt.Println("Nothing to send off — the river is clear.")
+		fmt.Println("Nothing to send off. The river is clear.")
 		return
 	}
+	warnUnsafe(targets, safety)
 	if !*yes && !confirmSendOff(targets, describeTargets(targets)) {
 		fmt.Println("Cancelled. The spirits stay.")
 		return

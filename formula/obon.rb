@@ -1,4 +1,4 @@
-# Homebrew formula stub — goreleaser overwrites this on release.
+# Homebrew formula stub, goreleaser overwrites this on release.
 # Tap: GH-Jaider/homebrew-obon
 class Obon < Formula
   desc "Every dev server your agents summoned, still lingering on your ports"

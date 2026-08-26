@@ -12,7 +12,7 @@ import (
 
 var version = "0.1.0"
 
-const usageText = `obon — every dev server your agents summoned, still lingering on your ports.
+const usageText = `obon: every dev server your agents summoned, still lingering on your ports.
 
 usage:
   obon                 open the lantern board (TUI)

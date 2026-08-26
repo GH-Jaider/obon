@@ -51,6 +51,8 @@ type Model struct {
 	detail       *scan.Group
 	detailScroll int
 	helpOpen     bool
+	probe        *probeResult // what localhost:port answered, for the open detail
+	probeKey     string       // group key the probe belongs to
 
 	confirm *confirmState
 
@@ -62,10 +64,12 @@ type Model struct {
 
 	width, height int
 	errText       string
+	home          string // current $HOME, for ~ abbreviation
 }
 
 type confirmState struct {
 	targets []ops.Target
+	safety  []scan.Safety // parallel to targets
 }
 
 // messages
@@ -84,7 +88,7 @@ func New(opts Options) Model {
 	fi.Prompt = "filter ▸ "
 	fi.CharLimit = 120
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(
-		lipgloss.NewStyle().Foreground(accent)))
+		lipgloss.NewStyle().Foreground(lantern)))
 	m := Model{
 		opts:    opts,
 		st:      newStyles(),
@@ -97,6 +101,7 @@ func New(opts Options) Model {
 		spin:    sp,
 		busy:    true,
 		states:  map[string]scan.DiffState{},
+		home:    userHome(),
 	}
 	return m
 }
@@ -162,6 +167,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// immediate re-scan so freed rows drift away right away
 		m.busy = true
 		return m, tea.Batch(scanCmd(m.src), cmd, m.spin.Tick)
+
+	case probedMsg:
+		if m.probeKey == msg.key {
+			res := msg.res
+			m.probe = &res
+		}
+		return m, nil
+
+	case openedMsg:
+		return m, m.setToast("Opened " + msg.url)
 
 	case toastExpireMsg:
 		if !m.toastUntil.IsZero() && !time.Now().Before(m.toastUntil) {
@@ -281,7 +296,7 @@ func (m *Model) report(results []ops.Result) tea.Cmd {
 			freePorts = append(freePorts, r.Port)
 		}
 	}
-	msg := fmt.Sprintf("Sent off %d — ", okN)
+	msg := fmt.Sprintf("Sent off %d · ", okN)
 	switch {
 	case len(freePorts) == 1:
 		msg += fmt.Sprintf(":%d is free", freePorts[0])

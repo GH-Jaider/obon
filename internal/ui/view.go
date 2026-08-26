@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -12,55 +13,74 @@ import (
 
 // colSpec is one visible table column.
 type colSpec struct {
-	name string
-	w    int
-	key  scan.SortKey // -1 for non-sortable
+	name  string
+	w     int
+	key   scan.SortKey // -1 for non-sortable
+	right bool         // right-align numeric columns
 }
 
+// Frame geometry. The whole board lives inside a rounded border; padX
+// is the breathing room inside it, and the cursor bar lives in it.
 const (
-	gutterW  = 2 // cursor ▸ / selection ● / spacer ·
-	colGap   = 1
+	padX     = 2 // inner horizontal padding between border and content
+	gutterW  = 2 // selection dot column
+	colGap   = 2
 	minProcW = 12
-	minCwdW  = 18
+	minCwdW  = 12
 )
 
-// columns decides which columns survive at this width. Low-priority
-// columns collapse instead of wrapping: CWD first, then Uptime, then Origin.
-func (m Model) columns() []colSpec {
+// innerW is the width between the two border runes.
+func (m Model) innerW() int {
 	w := m.width
 	if w <= 0 {
 		w = 80
 	}
+	return maxInt(10, w-2)
+}
+
+// contentW is the width a row background spans.
+func (m Model) contentW() int {
+	return m.innerW() - 2*padX
+}
+
+// columns decides which columns survive at this width. Low-priority
+// columns collapse instead of wrapping: CWD first, then Uptime, then
+// Origin. Leftover width goes mostly to CWD (paths earn it) and a
+// little to PROCESS.
+func (m Model) columns() []colSpec {
+	budget := m.contentW() - gutterW
 	cols := []colSpec{
-		{"PORT", 5, scan.SortPort},
-		{"PROTO", 7, scan.SortProto},
-		{"PROCESS", minProcW, scan.SortProcess},
-		{"PID", 7, scan.SortPID},
+		{"PORT", 6, scan.SortPort, false},
+		{"PROTO", 4, scan.SortProto, false},
+		{"SAFE", 5, scan.SortSafety, false},
+		{"PROCESS", minProcW, scan.SortProcess, false},
+		{"PID", 6, scan.SortPID, true},
 	}
-	spent := gutterW + colGap
+	spent := -colGap
 	for _, c := range cols {
 		spent += c.w + colGap
 	}
-	if w >= spent+9+colGap {
-		cols = append(cols, colSpec{"ORIGIN", 9, scan.SortOrigin})
-		spent += 9 + colGap
+	if budget >= spent+colGap+7 {
+		cols = append(cols, colSpec{"ORIGIN", 7, scan.SortOrigin, false})
+		spent += colGap + 7
 	}
-	if w >= spent+8+colGap {
-		cols = append(cols, colSpec{"UPTIME", 8, scan.SortUptime})
-		spent += 8 + colGap
+	if budget >= spent+colGap+6 {
+		cols = append(cols, colSpec{"UPTIME", 6, scan.SortUptime, true})
+		spent += colGap + 6
 	}
-	if rest := w - spent - minCwdW; rest >= 0 {
-		flex := minProcW + rest
+	if rest := budget - spent - colGap - minCwdW; rest >= 0 {
+		procExtra := minInt(rest/3, 16)
 		for i := range cols {
 			if cols[i].name == "PROCESS" {
-				cols[i].w = flex
+				cols[i].w += procExtra
 			}
 		}
-		cols = append(cols, colSpec{"CWD", minCwdW + maxInt(0, w-spent-minCwdW-flex), -1})
+		cols = append(cols, colSpec{"CWD", minCwdW + rest - procExtra, -1, false})
 	} else {
+		// no room for CWD: let PROCESS soak up whatever is left
 		for i := range cols {
 			if cols[i].name == "PROCESS" {
-				cols[i].w = maxInt(minProcW, w-spent+minProcW)
+				cols[i].w = maxInt(minProcW, cols[i].w+budget-spent)
 			}
 		}
 	}
@@ -82,17 +102,17 @@ func minInt(a, b int) int {
 }
 
 // bodyRows is how many table lines fit between header and footer.
-// Single source of truth for layout math (scroll, paging, rendering).
+// Frame: border, blank, title, blank, heads, rule · rule, status,
+// hints, border.
 func (m Model) bodyRows() int {
-	return m.height - 5 // title + col headers + blank gap + 2 footer lines
+	return maxInt(1, m.height-10)
 }
 
-// View renders the whole board.
+// View renders the whole board inside its rounded frame.
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "obon"
 	}
-	header := m.renderHeader()
 	bodyRows := m.bodyRows()
 
 	var body string
@@ -103,20 +123,51 @@ func (m Model) View() string {
 		body = m.centerBox(m.renderDetail(), bodyRows)
 	case m.helpOpen:
 		body = m.centerBox(m.renderHelp(), bodyRows)
+	case len(m.view) == 0:
+		body = m.centerBox(m.renderEmptyState(), bodyRows)
 	default:
 		body = strings.Join(m.tableBody(bodyRows), "\n")
 	}
-	// hold the frame at fixed height so the footer never jumps or scrolls
-	if n := strings.Count(body, "\n"); n < bodyRows-1 {
-		body += strings.Repeat("\n", bodyRows-1-n)
+
+	inner := make([]string, 0, m.height-2)
+	inner = append(inner, "")
+	inner = append(inner, m.titleLine())
+	inner = append(inner, "")
+	inner = append(inner, m.headLine())
+	inner = append(inner, m.ruleLine())
+	bodyLines := strings.Split(body, "\n")
+	if len(bodyLines) > bodyRows {
+		bodyLines = bodyLines[:bodyRows] // oversized modal on a tiny terminal
 	}
-	return header + "\n\n" + body + "\n" + m.renderFooter()
+	inner = append(inner, bodyLines...)
+	for len(inner) < m.height-5 {
+		inner = append(inner, "")
+	}
+	inner = append(inner, m.ruleLine())
+	inner = append(inner, margin()+m.contextLine())
+	inner = append(inner, margin()+m.hintLine())
+
+	return m.frame(inner)
+}
+
+// frame wraps the inner lines in the rounded border.
+func (m Model) frame(inner []string) string {
+	w := m.innerW()
+	b := m.st.border
+	var out strings.Builder
+	out.WriteString(b.Render("╭" + strings.Repeat("─", w) + "╮"))
+	for _, line := range inner {
+		out.WriteString("\n")
+		out.WriteString(b.Render("│"))
+		out.WriteString(padRight(line, w))
+		out.WriteString(b.Render("│"))
+	}
+	out.WriteString("\n")
+	out.WriteString(b.Render("╰" + strings.Repeat("─", w) + "╯"))
+	return out.String()
 }
 
 func (m Model) tableBody(rows int) []string {
-	if len(m.view) == 0 {
-		return []string{m.renderEmptyState()}
-	}
 	out := make([]string, 0, rows)
 	end := minInt(m.offset+rows, len(m.view))
 	for i := m.offset; i < end; i++ {
@@ -125,7 +176,8 @@ func (m Model) tableBody(rows int) []string {
 	return out
 }
 
-// centerBox centers a finished block vertically and horizontally.
+// centerBox centers a finished block vertically and horizontally
+// within the body region.
 func (m Model) centerBox(box string, rows int) string {
 	lines := strings.Split(box, "\n")
 	padTop := (rows - len(lines)) / 2
@@ -137,20 +189,28 @@ func (m Model) centerBox(box string, rows int) string {
 		out = append(out, "")
 	}
 	for _, l := range lines {
-		out = append(out, lipgloss.PlaceHorizontal(m.width, lipgloss.Center, l))
+		out = append(out, lipgloss.PlaceHorizontal(m.innerW(), lipgloss.Center, l))
 	}
 	return strings.Join(out, "\n")
 }
 
-func (m Model) renderHeader() string {
-	left := m.st.title.Render("obon")
-	right := m.busyIndicator() + m.summaryText()
-	titleLine := left
-	if pad := m.width - lipgloss.Width(left) - lipgloss.Width(right); pad > 0 && right != "" {
-		titleLine += strings.Repeat(" ", pad) + right
-	}
+func margin() string { return strings.Repeat(" ", padX) }
 
+// titleLine: the lantern badge and the river report.
+func (m Model) titleLine() string {
+	left := m.st.titleBadge.Render(" ◉ obon ")
+	right := m.busyIndicator() + m.summaryText()
+	line := margin() + left
+	if pad := m.contentW() - lipgloss.Width(left) - lipgloss.Width(right); pad > 0 && right != "" {
+		line += strings.Repeat(" ", pad) + right
+	}
+	return line
+}
+
+// headLine: the column headers, sort column lit.
+func (m Model) headLine() string {
 	var hb strings.Builder
+	hb.WriteString(margin())
 	hb.WriteString(strings.Repeat(" ", gutterW))
 	for i, c := range m.columns() {
 		if i > 0 {
@@ -166,9 +226,17 @@ func (m Model) renderHeader() string {
 				name += " ↓"
 			}
 		}
-		hb.WriteString(sty.Render(padRight(name, c.w)))
+		cell := padRight(name, c.w)
+		if c.right {
+			cell = padLeft(name, c.w)
+		}
+		hb.WriteString(sty.Render(cell))
 	}
-	return titleLine + "\n" + hb.String()
+	return hb.String()
+}
+
+func (m Model) ruleLine() string {
+	return margin() + m.st.rule.Render(strings.Repeat("─", m.contentW()))
 }
 
 func (m Model) busyIndicator() string {
@@ -180,7 +248,7 @@ func (m Model) busyIndicator() string {
 
 func (m Model) summaryText() string {
 	if m.snap == nil {
-		return m.st.subtitle.Render("")
+		return ""
 	}
 	total := len(m.snap.Groups)
 	agents := 0
@@ -189,13 +257,16 @@ func (m Model) summaryText() string {
 			agents++
 		}
 	}
-	s := fmt.Sprintf("%d spirit%s on the river", total, plural(total))
+	s := m.st.subtitle.Render(fmt.Sprintf("%d spirit%s on the river", total, plural(total)))
 	if agents > 0 {
-		s += fmt.Sprintf(" · %d lit by agents", agents)
+		s += m.st.subtitle.Render(" · ") +
+			m.st.originAg.Render(fmt.Sprintf("%d lit by agents", agents))
 	}
-	return m.st.subtitle.Render(s)
+	return s
 }
 
+// renderRow paints one line of the river. The cursor row rides violet
+// water behind a lantern bar; freshly-lit rows glow lantern orange.
 func (m Model) renderRow(i int) string {
 	g := m.view[i]
 	d := g.PIDs[0]
@@ -203,79 +274,163 @@ func (m Model) renderRow(i int) string {
 	isCursor := i == m.cursor
 	isSel := m.select_[g.Key]
 
-	// gutter: cursor arrow + selection dot
-	gCursor := " "
-	gSel := "·"
-	if isSel {
-		gSel = "●"
-	}
+	// margin: cursor bar
+	bar := margin()
 	if isCursor {
-		gCursor = "▸"
+		bar = lipgloss.NewStyle().Foreground(lantern).Bold(true).Render("▌") + " "
 	}
-	cursorSty := lipgloss.NewStyle().Foreground(dim)
-	if isCursor {
-		cursorSty = lipgloss.NewStyle().Foreground(accent).Bold(true)
-	}
-	selSty := lipgloss.NewStyle().Foreground(dim).Faint(true)
-	if isSel {
-		selSty = lipgloss.NewStyle().Foreground(accent)
-	}
-	marker := cursorSty.Render(gCursor) + selSty.Render(gSel)
 
-	line := marker
+	// background carrier: flash > cursor > plain; gaps ride the same
+	// water so the bar is unbroken
+	bg := func(s lipgloss.Style) lipgloss.Style {
+		switch {
+		case state == scan.Arrived:
+			return s.Foreground(flashInk).Background(lantern)
+		case isCursor:
+			return s.Background(cursorBg)
+		}
+		return s
+	}
+	gap := bg(lipgloss.NewStyle()).Render(strings.Repeat(" ", colGap))
+
+	// selection gutter
+	sel := strings.Repeat(" ", gutterW)
+	if isSel {
+		sel = padRight("●", gutterW)
+	}
+	line := bar + bg(m.st.selDot).Render(sel)
+
+	used := gutterW
 	for ci, c := range m.columns() {
 		if ci > 0 {
-			line += strings.Repeat(" ", colGap)
+			line += gap
+			used += colGap
 		}
-		text := padRight(truncRunes(cellValue(g, c.name), c.w), c.w)
+		used += c.w
 
-		if state == scan.Departing {
-			line += m.st.rowGone.Render(text)
+		// the SAFE pill keeps its own background on every water
+		if c.name == "SAFE" && state != scan.Arrived {
+			pill := m.safetyPill(d.Safety.Level)
+			line += pill
+			if pad := c.w - lipgloss.Width(pill); pad > 0 {
+				line += bg(lipgloss.NewStyle()).Render(strings.Repeat(" ", pad))
+			}
 			continue
 		}
-		if state == scan.Arrived {
+
+		raw := cellValue(g, c.name, m.home)
+		text := truncCell(raw, c.w)
+		if c.name == "CWD" {
+			text = truncPath(raw, c.w)
+		}
+		if c.right {
+			text = padLeft(text, c.w)
+		} else {
+			text = padRight(text, c.w)
+		}
+
+		switch {
+		case state == scan.Departing:
+			line += bg(m.st.rowGone).Render(text)
+		case state == scan.Arrived:
 			line += m.st.rowFlash.Render(text)
-			continue
+		default:
+			line += bg(m.cellStyle(g, d, c.name, isCursor)).Render(text)
 		}
-		line += m.cellStyle(g, d, c.name, isCursor).Render(text)
+	}
+	// extend the background to the right edge
+	if rest := m.contentW() - used; rest > 0 && (isCursor || state == scan.Arrived) {
+		line += bg(lipgloss.NewStyle()).Render(strings.Repeat(" ", rest))
 	}
 	return line
 }
 
-func cellValue(g *scan.Group, col string) string {
+func cellValue(g *scan.Group, col, home string) string {
 	d := g.PIDs[0]
 	switch col {
 	case "PORT":
-		return fmt.Sprint(g.Port)
+		return ":" + fmt.Sprint(g.Port)
 	case "PROTO":
-		return strings.ToUpper(g.Proto) + protoMark(g.Binds)
+		return g.Proto + protoMark(g.Binds)
+	case "SAFE":
+		return safetyWord(d.Safety.Level)
 	case "PROCESS":
 		return d.Process.Name + extraProcs(g)
 	case "PID":
 		return fmt.Sprint(d.Socket.PID)
 	case "ORIGIN":
+		if d.Origin == "manual" {
+			return "–"
+		}
 		return d.Origin
 	case "UPTIME":
 		return humanDur(d.Uptime)
 	case "CWD":
-		return d.Process.Cwd
+		return tildeHome(d.Process.Cwd, home)
 	}
 	return ""
+}
+
+// safetyWord is the three-letter verdict.
+func safetyWord(l scan.SafetyLevel) string {
+	switch l {
+	case scan.SafetySafe:
+		return "dev"
+	case scan.SafetyCaution:
+		return "app"
+	case scan.SafetySystem:
+		return "sys"
+	}
+	return "?"
+}
+
+// safetyPill renders the verdict as a solid-color pill, 5 cells wide.
+func (m Model) safetyPill(l scan.SafetyLevel) string {
+	w := safetyWord(l)
+	pad := " "
+	if len(w) == 1 {
+		pad = "  "
+	}
+	return m.pillStyle(l).Render(pad + w + " ")
+}
+
+func (m Model) pillStyle(l scan.SafetyLevel) lipgloss.Style {
+	switch l {
+	case scan.SafetySafe:
+		return m.st.pillDev
+	case scan.SafetyCaution:
+		return m.st.pillApp
+	case scan.SafetySystem:
+		return m.st.pillSys
+	}
+	return m.st.pillUnk
+}
+
+func (m Model) safetyStyle(l scan.SafetyLevel) lipgloss.Style {
+	switch l {
+	case scan.SafetySafe:
+		return m.st.safeOK
+	case scan.SafetyCaution:
+		return m.st.safeWarn
+	case scan.SafetySystem:
+		return m.st.safeSys
+	}
+	return m.st.safeUnk
 }
 
 func (m Model) cellStyle(g *scan.Group, d *scan.Detail, col string, isCursor bool) lipgloss.Style {
 	isAgent := d.Origin != "manual"
 	switch col {
 	case "PORT":
-		if !isCursor {
-			return m.st.row.Foreground(dim)
+		if isCursor {
+			return lipgloss.NewStyle().Foreground(lantern).Bold(true)
 		}
-		return m.st.row.Bold(true)
+		return m.st.row
 	case "PROTO":
-		if protoMark(g.Binds) == "*" {
+		if protoMark(g.Binds) != "" {
 			return m.st.warn
 		}
-		return m.st.dimText
+		return m.st.faintText
 	case "PROCESS":
 		st := m.st.row
 		if isAgent {
@@ -286,16 +441,16 @@ func (m Model) cellStyle(g *scan.Group, d *scan.Detail, col string, isCursor boo
 		}
 		return st
 	case "PID":
-		return m.st.dimText
+		return m.st.faintText
 	case "ORIGIN":
 		if isAgent {
 			return m.st.originAg
 		}
-		return m.st.originMan
+		return lipgloss.NewStyle().Foreground(faint)
 	case "UPTIME":
 		return m.st.dimText
 	case "CWD":
-		return m.st.dimText.Faint(true)
+		return m.st.dimText
 	}
 	return m.st.row
 }
@@ -317,57 +472,60 @@ func extraProcs(g *scan.Group) string {
 }
 
 func (m Model) renderEmptyState() string {
-	center := lipgloss.NewStyle().Width(m.width).Align(lipgloss.Center)
 	switch {
 	case m.filtering:
-		return center.Render(m.st.dimText.Render(""))
+		return ""
 	case m.applied != "":
-		return center.Render(m.st.dimText.Render(
-			fmt.Sprintf("Nothing matches %q — esc clears the filter", m.applied)))
+		return m.st.dimText.Render(
+			fmt.Sprintf("Nothing matches %q · esc clears the filter", m.applied))
 	case m.errText != "":
-		return center.Render(m.st.warn.Render("! " + m.errText))
+		return m.st.warn.Render("! " + m.errText)
 	case m.busy && m.snap == nil:
-		return center.Render(m.st.dimText.Render(m.spin.View() + " lighting the lanterns…"))
+		return m.st.dimText.Render(m.spin.View() + " lighting the lanterns…")
 	default:
-		return center.Render(strings.Join([]string{
+		return strings.Join([]string{
+			lipgloss.NewStyle().Foreground(lantern).Render("◉"),
+			"",
 			m.st.empty.Render("No spirits lingering. The river is clear."),
 			m.st.dimText.Render("r rescan · q quit"),
-		}, "\n"))
+		}, "\n")
 	}
-}
-
-func (m Model) renderFooter() string {
-	return m.contextLine() + "\n" + m.hintLine()
 }
 
 func (m Model) contextLine() string {
 	if m.toast != "" {
-		return m.st.toast.Render(truncRunes(m.toast, m.width-1))
+		return m.st.toast.Render(truncCell(m.toast, m.contentW()))
 	}
 	var parts []string
 	if m.filtering {
-		parts = append(parts, m.st.filterBox.Render(m.filter.View()))
+		parts = append(parts, m.st.filterChip.Render(" / ")+" "+m.filter.View())
 	} else if m.applied != "" {
-		parts = append(parts, m.st.filterBox.Render("/"+m.applied))
+		parts = append(parts, m.st.filterChip.Render(" /"+m.applied+" "))
 	}
-	info := fmt.Sprintf("%d shown", len(m.view))
+	info := m.st.dimText.Render(fmt.Sprintf("%d shown", len(m.view)))
 	if selN := len(m.select_); selN > 0 {
-		info += fmt.Sprintf(" · %d selected", selN)
+		info += m.st.faintText.Render(" · ") +
+			m.st.selDot.Render(fmt.Sprintf("%d selected", selN))
 	}
 	if len(m.view) > 0 && m.cursor < len(m.view) {
 		if cmd := m.view[m.cursor].PIDs[0].Process.Cmdline; cmd != "" {
-			budget := m.width - lipgloss.Width(info) - 6
+			budget := m.contentW() - lipgloss.Width(info) - 4
+			for _, p := range parts {
+				budget -= lipgloss.Width(p) + 2
+			}
 			if budget > 10 {
-				info += "  " + truncRunes(cmd, budget)
+				info += "  " + m.st.faintText.Render("$ "+truncCell(cmd, budget-2))
 			}
 		}
 	}
-	parts = append(parts, m.st.dimText.Render(info))
+	parts = append(parts, info)
 	return strings.Join(parts, "  ")
 }
 
+// hk is one key hint in the footer.
+type hk struct{ k, v string }
+
 func (m Model) hintLine() string {
-	type hk struct{ k, v string }
 	var keys []hk
 	switch {
 	case m.confirm != nil:
@@ -375,23 +533,52 @@ func (m Model) hintLine() string {
 	case m.filtering:
 		keys = []hk{{"enter", "apply"}, {"esc", "cancel"}}
 	case m.detail != nil:
-		keys = []hk{{"j/k", "scroll"}, {"esc", "close"}}
+		keys = []hk{{"o", "open in browser"}, {"j/k", "scroll"}, {"esc", "close"}}
+		if m.detail.Proto != scan.TCP {
+			keys = keys[1:]
+		}
 	default:
-		keys = []hk{
-			{"j/k", "move"}, {"space", "select"}, {"x", "send off"},
-			{"enter", "detail"}, {"/", "filter"}, {"s", "sort"},
-			{"r", "rescan"}, {"?", "help"}, {"q", "quit"},
+		// widest set that fits this terminal
+		sets := [][]hk{
+			{
+				{"j/k", "move"}, {"space", "select"}, {"x", "send off"},
+				{"enter", "detail"}, {"o", "open"}, {"/", "filter"},
+				{"s", "sort"}, {"r", "rescan"}, {"?", "help"}, {"q", "quit"},
+			},
+			{
+				{"j/k", "move"}, {"space", "select"}, {"x", "send off"},
+				{"/", "filter"}, {"?", "help"}, {"q", "quit"},
+			},
+			{{"x", "send off"}, {"?", "help"}, {"q", "quit"}},
+			{{"?", "help"}},
+		}
+		for _, set := range sets {
+			if hintWidth(set) <= m.contentW() {
+				keys = set
+				break
+			}
 		}
 	}
 	var out strings.Builder
 	for i, k := range keys {
 		if i > 0 {
-			out.WriteString(m.st.help.Render(" · "))
+			out.WriteString(m.st.faintText.Render(" · "))
 		}
 		out.WriteString(m.st.helpKey.Render(k.k))
 		out.WriteString(m.st.help.Render(" " + k.v))
 	}
 	return out.String()
+}
+
+func hintWidth(keys []hk) int {
+	w := 0
+	for i, k := range keys {
+		if i > 0 {
+			w += 3 // " · "
+		}
+		w += len(k.k) + 1 + len(k.v)
+	}
+	return w
 }
 
 func humanDur(d time.Duration) string {
@@ -423,7 +610,16 @@ func padRight(s string, w int) string {
 	return s + strings.Repeat(" ", w-l)
 }
 
-func truncRunes(s string, w int) string {
+func padLeft(s string, w int) string {
+	l := lipgloss.Width(s)
+	if l >= w {
+		return s
+	}
+	return strings.Repeat(" ", w-l) + s
+}
+
+// truncCell shortens plain cell text, keeping the head.
+func truncCell(s string, w int) string {
 	r := []rune(s)
 	if len(r) <= w {
 		return s
@@ -432,4 +628,43 @@ func truncRunes(s string, w int) string {
 		return string(r[:maxInt(w, 0)])
 	}
 	return string(r[:w-1]) + "…"
+}
+
+// truncRunes keeps the old name for the head-truncating helper.
+func truncRunes(s string, w int) string { return truncCell(s, w) }
+
+// truncPath shortens a path from the left, keeping the tail: the
+// project name matters more than the /Users prefix.
+func truncPath(s string, w int) string {
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	if w <= 1 {
+		return string(r[:maxInt(w, 0)])
+	}
+	return "…" + string(r[len(r)-w+1:])
+}
+
+// tildeHome abbreviates the current home directory to ~ for display.
+func tildeHome(p, home string) string {
+	if home == "" || !strings.HasPrefix(p, home) {
+		return p
+	}
+	rest := strings.TrimPrefix(p, home)
+	if rest == "" {
+		return "~"
+	}
+	if !strings.HasPrefix(rest, "/") {
+		return p
+	}
+	return "~" + rest
+}
+
+func userHome() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return h
 }

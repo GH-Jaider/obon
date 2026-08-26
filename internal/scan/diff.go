@@ -41,7 +41,11 @@ func (t *Tracker) Update(keys []string) map[string]DiffState {
 		present[k] = true
 		e := t.states[k]
 		if e == nil {
-			t.states[k] = &trackEntry{bornAt: t.cycle, lastSeen: t.cycle, state: Arrived}
+			st := Arrived
+			if t.cycle == 1 {
+				st = Stable // first scan: the river starts calm, nothing "arrives"
+			}
+			t.states[k] = &trackEntry{bornAt: t.cycle, lastSeen: t.cycle, state: st}
 		} else if e.state == Departing {
 			e.state = Stable // came back before finishing its send-off
 			e.lastSeen = t.cycle

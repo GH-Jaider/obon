@@ -2,18 +2,27 @@ package scan
 
 import "testing"
 
+func TestTrackerFirstScanIsBaseline(t *testing.T) {
+	tr := NewTracker(2)
+	s := tr.Update([]string{"a", "b"})
+	if s["a"] != Stable || s["b"] != Stable {
+		t.Fatal("the first scan is the baseline; nothing arrives on it")
+	}
+}
+
 func TestTrackerArrivalThenStable(t *testing.T) {
 	tr := NewTracker(2)
-	s := tr.Update([]string{"a"})
-	if s["a"] != Arrived {
-		t.Fatal("first sight must be Arrived")
+	tr.Update([]string{"a"}) // baseline
+	s := tr.Update([]string{"a", "b"})
+	if s["b"] != Arrived {
+		t.Fatal("newcomer after baseline must be Arrived")
 	}
-	s = tr.Update([]string{"a"})
-	if s["a"] != Arrived {
+	s = tr.Update([]string{"a", "b"})
+	if s["b"] != Arrived {
 		t.Fatal("second cycle still lit")
 	}
-	s = tr.Update([]string{"a"})
-	if s["a"] != Stable {
+	s = tr.Update([]string{"a", "b"})
+	if s["b"] != Stable {
 		t.Fatal("third cycle must settle")
 	}
 }
